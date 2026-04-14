@@ -1,1 +1,111 @@
+"""
+Roche Limit simulation: a moon made of gravitating particles
+orbits a planet and is either held together by self-gravity or
+torn apart by tidal forces, depending on orbital distance.
 
+Change ORBIT_IN_ROCHE_LIMITS and re-run to experiment.
+  >= 3.0 -> stable     ~ 2.5 -> transition     <= 2.0 -> disrupted
+"""
+
+from vpython import *
+import math
+
+# --- Parameters (SI units) ---
+G             = 6.674e-11
+PLANET_MASS   = 5.97e26
+PLANET_RADIUS = 6.4e6
+MOON_MASS     = 1.0e24
+MOON_RADIUS   = 1.0e6
+N_TARGET      = 50       # approximate particle count
+DT            = 10.0     # timestep
+SOFTENING     = 0.5 * MOON_RADIUS
+DAMPING       = 1.0e-4   # internal collision damping rate
+DAMP_RADIUS   = 3.0 * MOON_RADIUS
+
+ORBIT_IN_ROCHE_LIMITS = 0.8
+
+# --- Derived quantities ---
+ROCHE_LIMIT    = PLANET_RADIUS * (2 * PLANET_MASS / MOON_MASS) ** (1/3)
+# in reality the ratio of densities is what matters - let's pretend mass = density (volume = 1 for both bodies)
+ORBIT_DISTANCE = ORBIT_IN_ROCHE_LIMITS * ROCHE_LIMIT
+
+# --- Place particles on a grid inside a sphere ---
+spacing = MOON_RADIUS * (4 * math.pi / (3 * N_TARGET)) ** (1/3)
+half = int(MOON_RADIUS / spacing) + 1
+offsets = []
+for ix in range(-half, half+1):
+    for iy in range(-half, half+1):
+        for iz in range(-half, half+1):
+            x, y, z = ix*spacing, iy*spacing, iz*spacing
+            if x*x + y*y + z*z <= MOON_RADIUS**2:
+                offsets.append((x, y, z))
+
+N = len(offsets)
+PARTICLE_MASS = MOON_MASS / N
+
+# --- Set up 3D scene ---
+scene = canvas(width=1000, height=650, background=color.black,
+               range=ORBIT_DISTANCE * 1.6)
+
+sphere(pos=vector(0,0,0), radius=PLANET_RADIUS,
+       color=vector(0.2, 0.4, 1.0), emissive=True)
+
+#ring(pos=vector(0,0,0), axis=vector(0,0,1), radius=ROCHE_LIMIT,
+#     thickness=ROCHE_LIMIT * 0.006, color=color.red, opacity=0.4)
+
+# --- Create particles with Keplerian orbit velocities ---
+particles = []
+for ox, oy, oz in offsets:
+    px, py, pz = ox + ORBIT_DISTANCE, oy, oz # translate the x position of each particle
+    r = math.sqrt(px*px + py*py + pz*pz)
+    v = math.sqrt(G * PLANET_MASS / r)
+    tx, ty = -py/r, px/r
+
+    body = sphere(pos=vector(px, py, pz), radius=MOON_RADIUS * 0.3,
+                  color=vector(1, 0.85, 0.2), emissive=True)
+    particles.append({'body': body, 'vel': vector(v*tx, v*ty, 0)})
+
+# --- Main loop ---
+eps_sq = SOFTENING**2
+damp_r_sq = DAMP_RADIUS**2
+
+while True:
+    rate(100)
+
+    # Compute gravitational forces
+    forces = [vector(0,0,0) for _ in range(N)]
+
+    for i in range(N):
+        ri = particles[i]['body'].pos
+
+        # Planet gravity
+        r_sq = mag2(ri)
+        forces[i] -= (G * PLANET_MASS * PARTICLE_MASS / r_sq) * (ri / math.sqrt(r_sq))
+
+        # Pairwise self-gravity (softened)
+        for j in range(i+1, N):
+            dr = particles[j]['body'].pos - ri
+            r_sq_s = mag2(dr) + eps_sq
+            f = (G * PARTICLE_MASS**2 / r_sq_s) * (dr / math.sqrt(r_sq_s))
+            forces[i] += f
+            forces[j] -= f
+
+    # Center of mass for damping
+    com_pos = vector(0,0,0)
+    com_vel = vector(0,0,0)
+    for p in particles:
+        com_pos += p['body'].pos
+        com_vel += p['vel']
+    com_pos /= N
+    com_vel /= N
+
+    # Euler integration + damping
+    df = 1 - DAMPING * DT
+    for i in range(N):
+        p = particles[i]
+        p['vel'] += (forces[i] / PARTICLE_MASS) * DT
+
+        if mag2(p['body'].pos - com_pos) < damp_r_sq:
+            p['vel'] = com_vel + (p['vel'] - com_vel) * df
+
+        p['body'].pos += p['vel'] * DT
